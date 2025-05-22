@@ -16,7 +16,7 @@ class MediaToMKVConverter(tk.Frame):
         super().__init__(master, bg="#2e2e2e")
         self.master = master
         self.master.title("Media to MKV Converter")
-        self.master.geometry("500x550")
+        self.master.geometry("500x600")
         self.pack(fill=tk.BOTH, expand=True)
 
         self.cancel_flag = threading.Event()
@@ -31,8 +31,11 @@ class MediaToMKVConverter(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        tk.Label(self, text="Select media files to convert to MKV", bg="#2e2e2e", fg="white").pack(pady=10)
-        tk.Button(self, text="Select Files", command=self.select_files).pack(pady=5)
+        tk.Label(self, text="Add media files or folders:", bg="#2e2e2e", fg="white").pack(pady=10)
+        btn_frame = tk.Frame(self, bg="#2e2e2e")
+        tk.Button(btn_frame, text="Select Files", command=self.select_files).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Select Folder", command=self.select_folder).pack(side=tk.LEFT, padx=5)
+        btn_frame.pack(pady=5)
 
         opts = tk.Frame(self, bg="#2e2e2e")
         self.delete_var = tk.BooleanVar()
@@ -63,12 +66,24 @@ class MediaToMKVConverter(tk.Frame):
         paths = filedialog.askopenfilenames(
             filetypes=[("Media", "*" + " *.".join(ext.lstrip('.') for ext in SUPPORTED_EXTENSIONS))]
         )
-        self.files = [Path(p) for p in paths if Path(p).suffix.lower() in SUPPORTED_EXTENSIONS]
-        self.status.config(text=f"{len(self.files)} files ready")
+        for p in paths:
+            path = Path(p)
+            if path.suffix.lower() in SUPPORTED_EXTENSIONS and path not in self.files:
+                self.files.append(path)
+        self.status.config(text=f"{len(self.files)} items ready")
+
+    def select_folder(self):
+        folder = filedialog.askdirectory()
+        if not folder:
+            return
+        for path in Path(folder).rglob('*'):
+            if path.suffix.lower() in SUPPORTED_EXTENSIONS and path not in self.files:
+                self.files.append(path)
+        self.status.config(text=f"{len(self.files)} items ready")
 
     def start(self):
         if not self.files:
-            messagebox.showwarning("No files", "Select at least one media file.")
+            messagebox.showwarning("No media", "Select files or folders first.")
             return
         self.cancel_flag.clear()
         self.start_btn.config(state=tk.DISABLED)
@@ -93,28 +108,31 @@ class MediaToMKVConverter(tk.Frame):
         base_out.mkdir(exist_ok=True)
 
         for idx, src in enumerate(self.files, 1):
-            if self.cancel_flag.is_set(): break
+            if self.cancel_flag.is_set():
+                break
             ext = src.suffix.lower()
             formats[ext] = formats.get(ext, 0) + 1
             out_dir = src.parent if self.same_var.get() else base_out
-            out = out_dir / f"{src.stem}.mkv"
             out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / f"{src.stem}.mkv"
 
             self.status.config(text=f"[{idx}/{total}] {src.name}")
             cmd = [self.ffmpeg_path, "-y", "-i", str(src),
                    "-map", "0:v", "-map", "0:a", "-c", "copy", str(out)]
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-            err = res.stderr.decode(errors='ignore').strip().splitlines()
+            err_lines = res.stderr.decode(errors='ignore').strip().splitlines()
             if res.returncode == 0 and out.exists() and out.stat().st_size > 1024:
                 stats['converted'] += 1
                 stats['input'] += src.stat().st_size
                 stats['output'] += out.stat().st_size
-                if self.delete_var.get(): src.unlink()
+                if self.delete_var.get():
+                    src.unlink()
                 self._log(f"OK: {src.name}")
             else:
-                stats['failed'].append((src.name, err[-1] if err else 'Unknown error'))
-                self._log(f"FAIL: {src.name} -> {err[-1] if err else 'Unknown'}")
+                error_msg = err_lines[-1] if err_lines else 'Unknown error'
+                stats['failed'].append((src.name, error_msg))
+                self._log(f"FAIL: {src.name} -> {error_msg}")
 
             self.progress.step()
 
@@ -133,7 +151,8 @@ class MediaToMKVConverter(tk.Frame):
         ]
         if stats['failed']:
             summary.append("Failures:")
-            summary += [f" {n}: {e}" for n, e in stats['failed']]
+            for name, msg in stats['failed']:
+                summary.append(f" {name}: {msg}")
         summary_text = "\n".join(summary)
 
         self.status.config(text="Done")
